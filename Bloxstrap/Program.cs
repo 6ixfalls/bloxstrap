@@ -22,7 +22,7 @@ namespace Bloxstrap
         public static readonly CultureInfo CultureFormat = CultureInfo.InvariantCulture;
 
         public const string ProjectName = "Bloxstrap";
-        public const string ProjectRepository = "pizzaboxer/bloxstrap";
+        public const string ProjectRepository = "6ixfalls/bloxstrap";
 
         #region base64 stuff
         // TODO: using IPFS as a reliable method for static asset storage instead of base64?
