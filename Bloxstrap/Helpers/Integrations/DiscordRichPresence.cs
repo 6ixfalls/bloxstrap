@@ -10,7 +10,7 @@ namespace Bloxstrap.Helpers.Integrations
 {
     class DiscordRichPresence : IDisposable
     {
-        readonly DiscordRpcClient RichPresence = new("1005469189907173486");
+        readonly DiscordRpcClient RichPresence = new("626092891667824688");
 
         const string GameJoiningEntry = "[FLog::Output] ! Joining game";
         const string GameJoinedEntry = "[FLog::Network] serverId:";
@@ -134,7 +134,7 @@ namespace Bloxstrap.Helpers.Integrations
                 return true;
             }
 
-            string placeThumbnail = "roblox";
+            string placeThumbnail = "logo_shiny";
 
             var placeInfo = await Utilities.GetJson<RobloxAsset>($"https://economy.roblox.com/v2/assets/{ActivityPlaceId}/details");
 
@@ -146,20 +146,13 @@ namespace Bloxstrap.Helpers.Integrations
             if (thumbnailInfo is not null)
                 placeThumbnail = thumbnailInfo.Data![0].ImageUrl!;
 
-            List<DiscordRPC.Button> buttons = new()
-            {
-                new DiscordRPC.Button()
-                {
-                    Label = "See Details",
-                    Url = $"https://www.roblox.com/games/{ActivityPlaceId}"
-                }
-            };
+            List<DiscordRPC.Button> buttons = new();
 
             if (!Program.Settings.HideRPCButtons)
             {
                 buttons.Insert(0, new DiscordRPC.Button()
                 {
-                    Label = "Join",
+                    Label = "Join Game",
                     Url = $"https://www.roblox.com/games/start?placeId={ActivityPlaceId}&gameInstanceId={ActivityJobId}&launchData=%7B%7D"
                 });
             }
@@ -173,9 +166,7 @@ namespace Bloxstrap.Helpers.Integrations
                 Assets = new Assets()
                 {
                     LargeImageKey = placeThumbnail,
-                    LargeImageText = placeInfo.Name,
-                    SmallImageKey = "roblox",
-                    SmallImageText = "Roblox"
+                    LargeImageText = placeInfo.Name
                 }
             });
 
