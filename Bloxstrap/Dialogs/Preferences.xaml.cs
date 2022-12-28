@@ -199,6 +199,12 @@ namespace Bloxstrap.Dialogs
             set => Program.Settings.UseOldMouseCursor = value; 
         }
 
+        public bool ModDisableAppPatch
+        {
+            get => Program.Settings.UseDisableAppPatch;
+            set => Program.Settings.UseDisableAppPatch = value;
+        }
+
         public bool ModFolderButtonEnabled { get; } = !Program.IsFirstRun;
         public string ModFolderButtonText { get; } = Program.IsFirstRun ? "Custom mods can be added after installing Bloxstrap" : "Open mod folder";
         #endregion
@@ -343,10 +349,10 @@ namespace Bloxstrap.Dialogs
         {
             ChannelInfo = "Getting latest version info, please wait...\n";
 
-            VersionDeploy info = await DeployManager.GetLastDeploy(channel);
-            string strTimestamp = info.Timestamp.ToString("MM/dd/yyyy h:mm:ss tt", Program.CultureFormat);
+            ClientVersion info = await DeployManager.GetLastDeploy(channel, true);
+            string? strTimestamp = info.Timestamp?.ToString("MM/dd/yyyy h:mm:ss tt", Program.CultureFormat);
 
-            ChannelInfo = $"Version: v{info.FileVersion} ({info.VersionGuid})\nDeployed: {strTimestamp}";
+            ChannelInfo = $"Version: v{info.Version} ({info.VersionGuid})\nDeployed: {strTimestamp}";
         }
     }
 }
