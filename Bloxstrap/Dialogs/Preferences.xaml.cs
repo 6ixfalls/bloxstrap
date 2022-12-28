@@ -205,6 +205,12 @@ namespace Bloxstrap.Dialogs
             set => Program.Settings.UseDisableAppPatch = value;
         }
 
+        public bool ModAllowMultipleInstances
+        {
+            get => Program.Settings.UseAllowMultipleInstances;
+            set => Program.Settings.UseAllowMultipleInstances = value;
+        }
+
         public bool ModFolderButtonEnabled { get; } = !Program.IsFirstRun;
         public string ModFolderButtonText { get; } = Program.IsFirstRun ? "Custom mods can be added after installing Bloxstrap" : "Open mod folder";
         #endregion

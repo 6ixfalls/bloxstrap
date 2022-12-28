@@ -170,6 +170,10 @@ namespace Bloxstrap
 
             if (!String.IsNullOrEmpty(commandLine))
             {
+                // Allow roblox to have multiple instances
+                if (Settings.UseAllowMultipleInstances)
+                    new Mutex(true, "ROBLOX_singletonMutex");
+
                 DeployManager.Channel = Settings.Channel;
                 Settings.BootstrapperStyle.Show(new Bootstrapper(commandLine));
             }
