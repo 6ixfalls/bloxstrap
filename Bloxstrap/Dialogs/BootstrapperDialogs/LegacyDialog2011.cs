@@ -37,8 +37,9 @@ namespace Bloxstrap.Dialogs.BootstrapperDialogs
             Bootstrapper = bootstrapper;
             
             // have to convert icon -> bitmap since winforms scaling is poop
-            this.IconBox.Image = Program.Settings.BootstrapperIcon.GetIcon().ToBitmap();
+            this.IconBox.BackgroundImage = Program.Settings.BootstrapperIcon.GetIcon().ToBitmap();
 
+            ScaleWindow();
             SetupDialog();
         }
 

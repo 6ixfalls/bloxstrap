@@ -12,6 +12,7 @@ using Bloxstrap.Helpers.Integrations;
 using Bloxstrap.Helpers.RSMM;
 using Bloxstrap.Models;
 using System.Net;
+using Bloxstrap.Properties;
 
 namespace Bloxstrap
 {
@@ -81,7 +82,10 @@ namespace Bloxstrap
 
         private readonly bool FreshInstall;
 
-        private int ProgressIncrement;
+        private double ProgressIncrement;
+        private long TotalBytes = 0;
+        private long TotalDownloadedBytes = 0;
+        private int PackagesExtracted = 0;
         private bool CancelFired = false;
 
         public IBootstrapperDialog Dialog = null!;
@@ -106,6 +110,11 @@ namespace Bloxstrap
                 return;
             }
 
+#if !DEBUG
+            if (!Program.IsFirstRun && Program.Settings.CheckForUpdates)
+                await CheckForUpdates();
+#endif
+
             await CheckLatestVersion();
 
             // if bloxstrap is installing for the first time but is running, prompt to close roblox
@@ -113,7 +122,7 @@ namespace Bloxstrap
             if (!Directory.Exists(VersionFolder) && CheckIfRunning(true) || Program.Settings.VersionGuid != VersionGuid && !CheckIfRunning(false))
                 await InstallLatestVersion();
 
-            ApplyModifications();
+            await ApplyModifications();
 
             if (Program.IsFirstRun)
                 Program.SettingsManager.ShouldSave = true;
@@ -132,6 +141,50 @@ namespace Bloxstrap
                 Dialog.ShowSuccess($"{Program.ProjectName} has successfully installed");
             else if (!Program.IsNoLaunch)
                 await StartRoblox();
+
+            Program.Exit();
+        }
+
+        private async Task CheckForUpdates()
+        {
+            string currentVersion = $"Bloxstrap v{Program.Version}";
+
+            var releaseInfo = await Utilities.GetJson<GithubRelease>($"https://api.github.com/repos/{Program.ProjectRepository}/releases/latest");
+
+            if (releaseInfo is null || releaseInfo.Name is null || releaseInfo.Assets is null || currentVersion == releaseInfo.Name)
+                return;
+
+            Dialog.Message = "Getting the latest Bloxstrap...";
+
+            // 64-bit is always the first option
+            GithubReleaseAsset asset = releaseInfo.Assets[Environment.Is64BitOperatingSystem ? 0 : 1];
+            string downloadLocation = Path.Combine(Directories.Updates, asset.Name);
+
+            Directory.CreateDirectory(Directories.Updates);
+
+            Debug.WriteLine($"Downloading {releaseInfo.Name}...");
+
+            if (!File.Exists(downloadLocation))
+            {
+                var response = await Program.HttpClient.GetAsync(asset.BrowserDownloadUrl);
+
+                using (var fileStream = new FileStream(Path.Combine(Directories.Updates, asset.Name), FileMode.CreateNew))
+                {
+                    await response.Content.CopyToAsync(fileStream);
+                }
+            }
+
+            Debug.WriteLine($"Starting {releaseInfo.Name}...");
+
+            ProcessStartInfo startInfo = new()
+            {
+                FileName = downloadLocation,
+            };
+
+            foreach (string arg in Program.LaunchArgs)
+                startInfo.ArgumentList.Add(arg);
+
+            Process.Start(startInfo);
 
             Program.Exit();
         }
@@ -179,6 +232,12 @@ namespace Bloxstrap
 
             Dialog.Message = "Starting Roblox...";
 
+            if (LaunchCommandLine == "--app" && Program.Settings.UseDisableAppPatch)
+            {
+                Utilities.OpenWebsite("https://www.roblox.com/games");
+                return;
+            }
+
             // launch time isn't really required for all launches, but it's usually just safest to do this
             LaunchCommandLine += " --launchtime=" + DateTimeOffset.Now.ToUnixTimeMilliseconds();
 
@@ -204,9 +263,11 @@ namespace Bloxstrap
 
                 if (Program.Settings.RFUEnabled && Process.GetProcessesByName("rbxfpsunlocker").Length == 0)
                 {
-                    ProcessStartInfo startInfo = new();
-                    startInfo.FileName = Path.Combine(Directories.Integrations, @"rbxfpsunlocker\rbxfpsunlocker.exe");
-                    startInfo.WorkingDirectory = Path.Combine(Directories.Integrations, "rbxfpsunlocker");
+                    ProcessStartInfo startInfo = new()
+                    {
+                        FileName = Path.Combine(Directories.Integrations, @"rbxfpsunlocker\rbxfpsunlocker.exe"),
+                        WorkingDirectory = Path.Combine(Directories.Integrations, "rbxfpsunlocker")
+                    };
 
                     rbxFpsUnlocker = Process.Start(startInfo);
 
@@ -218,10 +279,6 @@ namespace Bloxstrap
                 await Task.Delay(3000);
 
                 // now we move onto handling rich presence
-                // this is going to be an issue for desktop app launches as this gets the place id from the command line,
-                // but the desktop app launch can switch games without having to close the client
-                // i might be able to experiment with reading from the latest log file in realtime to circumvent this,
-                // but i have no idea how reliable it will be. todo?
                 if (Program.Settings.UseDiscordRichPresence)
                 {
                     richPresence = new DiscordRichPresence();
@@ -266,9 +323,9 @@ namespace Bloxstrap
  
             Program.Exit(ERROR_INSTALL_USEREXIT);
         }
-        #endregion
+#endregion
 
-        #region App Install
+#region App Install
         public static void Register()
         {
             RegistryKey applicationKey = Registry.CurrentUser.CreateSubKey($@"Software\{Program.ProjectName}");
@@ -384,13 +441,19 @@ namespace Bloxstrap
             }
             catch (Exception) { }
 
-            Dialog.ShowSuccess($"{Program.ProjectName} has been uninstalled");
+            Dialog.ShowSuccess($"{Program.ProjectName} has succesfully uninstalled");
 
-            Environment.Exit(ERROR_PRODUCT_UNINSTALLED);
+            Program.Exit();
         }
-        #endregion
+#endregion
 
-        #region Roblox Install
+#region Roblox Install
+        private void UpdateProgressbar()
+        {
+            int newProgress = (int)Math.Floor(ProgressIncrement * TotalDownloadedBytes);
+            Dialog.ProgressValue = newProgress;
+        }
+
         private async Task InstallLatestVersion()
         {
             if (FreshInstall)
@@ -402,49 +465,39 @@ namespace Bloxstrap
 
             Dialog.CancelEnabled = true;
 
-            // i believe the bootstrapper bases the progress bar off
-            // bytes downloaded / bytes total according to rbxPkgManifest?
-            // i'm too lazy for that, so here it's just based off how many packages
-            // have finished downloading
-
             Dialog.ProgressStyle = ProgressBarStyle.Continuous;
 
-            ProgressIncrement = (int)Math.Floor((decimal)1 / VersionPackageManifest.Count * 100);
-
-            Directory.CreateDirectory(Directories.Downloads);
+            // compute total bytes to download
 
             foreach (Package package in VersionPackageManifest)
-            {
-                // download all the packages at once
-                DownloadPackage(package);
-            }
+                TotalBytes += package.PackedSize;
 
-            do
-            {
-                // wait for download to finish (and also round off the progress bar if needed)
+            ProgressIncrement = (double)1 / TotalBytes * 100;
 
-                if (Dialog.ProgressValue == ProgressIncrement * VersionPackageManifest.Count)
-                    Dialog.ProgressValue = 100;
-
-                await Task.Delay(1000);
-            }
-            while (Dialog.ProgressValue != 100);
-
-            Dialog.ProgressStyle = ProgressBarStyle.Marquee;
-
-            Debug.WriteLine("Finished downloading");
-
-            Dialog.Message = "Configuring Roblox...";
-
+            Directory.CreateDirectory(Directories.Downloads);
             Directory.CreateDirectory(Directories.Versions);
 
             foreach (Package package in VersionPackageManifest)
             {
-                // extract all the packages at once (shouldn't be too heavy on cpu?)
+                // download all the packages synchronously
+                await DownloadPackage(package);
+
+                // extract the package immediately after download
                 ExtractPackage(package);
             }
 
-            Debug.WriteLine("Finished extracting packages");
+            // allow progress bar to 100% before continuing (purely ux reasons lol)
+            await Task.Delay(1000);
+
+            Dialog.ProgressStyle = ProgressBarStyle.Marquee;
+
+            Dialog.Message = "Configuring Roblox...";
+
+            // wait for all packages to finish extracting
+            while (PackagesExtracted < VersionPackageManifest.Count)
+            {
+                await Task.Delay(100);
+            }
 
             string appSettingsLocation = Path.Combine(VersionFolder, "AppSettings.xml");
             await File.WriteAllTextAsync(appSettingsLocation, AppSettings);
@@ -472,7 +525,7 @@ namespace Bloxstrap
             Program.Settings.VersionGuid = VersionGuid;
         }
 
-        private void ApplyModifications()
+        private async Task ApplyModifications()
         {
             Dialog.Message = "Applying Roblox modifications...";
 
@@ -485,13 +538,13 @@ namespace Bloxstrap
             if (!Directory.Exists(modFolder))
             {
                 Directory.CreateDirectory(modFolder);
-                File.WriteAllText(Path.Combine(modFolder, "README.txt"), ModReadme);
+                await File.WriteAllTextAsync(Path.Combine(modFolder, "README.txt"), ModReadme);
             }
 
-            CheckModPreset(Program.Settings.UseOldDeathSound, @"content\sounds\ouch.ogg", Program.Base64OldDeathSound);
-            CheckModPreset(Program.Settings.UseOldMouseCursor, @"content\textures\Cursors\KeyboardMouse\ArrowCursor.png", Program.Base64OldArrowCursor);
-            CheckModPreset(Program.Settings.UseOldMouseCursor, @"content\textures\Cursors\KeyboardMouse\ArrowFarCursor.png", Program.Base64OldArrowFarCursor);
-            CheckModPreset(Program.Settings.UseDisableAppPatch, @"ExtraContent\places\Mobile.rbxl", "");
+            await CheckModPreset(Program.Settings.UseOldDeathSound, @"content\sounds\ouch.ogg", "OldDeath.ogg");
+            await CheckModPreset(Program.Settings.UseOldMouseCursor, @"content\textures\Cursors\KeyboardMouse\ArrowCursor.png", "OldCursor.png");
+            await CheckModPreset(Program.Settings.UseOldMouseCursor, @"content\textures\Cursors\KeyboardMouse\ArrowFarCursor.png", "OldFarCursor.png");
+            await CheckModPreset(Program.Settings.UseDisableAppPatch, @"ExtraContent\places\Mobile.rbxl", "");
 
             foreach (string file in Directory.GetFiles(modFolder, "*.*", SearchOption.AllDirectories))
             {
@@ -510,7 +563,7 @@ namespace Bloxstrap
             // original files from the downloaded packages
 
             if (File.Exists(manifestFile))
-                manifestFiles = File.ReadAllLines(manifestFile).ToList<string>();
+                manifestFiles = (await File.ReadAllLinesAsync(manifestFile)).ToList();
             else
                 manifestFiles = modFolderFiles;
 
@@ -537,8 +590,7 @@ namespace Bloxstrap
                 File.SetAttributes(fileVersionFolder, File.GetAttributes(fileModFolder) & ~FileAttributes.ReadOnly);
             }
 
-            // now check for files that have been deleted from the mod folder
-            // according to the manifest
+            // now check for files that have been deleted from the mod folder according to the manifest
             foreach (string fileLocation in manifestFiles)
             {
                 if (modFolderFiles.Contains(fileLocation))
@@ -564,10 +616,10 @@ namespace Bloxstrap
             File.WriteAllLines(manifestFile, modFolderFiles);
         }
 
-        private static void CheckModPreset(bool condition, string location, string base64Contents)
+        private static async Task CheckModPreset(bool condition, string location, string name)
         {
             string modFolderLocation = Path.Combine(Directories.Modifications, location);
-            byte[] binaryData = Convert.FromBase64String(base64Contents);
+            byte[] binaryData = string.IsNullOrEmpty(name) ? Array.Empty<byte>() : await ResourceHelper.Get(name);
 
             if (condition)
             {
@@ -580,7 +632,7 @@ namespace Bloxstrap
 
                     Directory.CreateDirectory(directory);
 
-                    File.WriteAllBytes(modFolderLocation, binaryData);
+                    await File.WriteAllBytesAsync(modFolderLocation, binaryData);
                 }
             }
             else if (File.Exists(modFolderLocation) && Utilities.MD5File(modFolderLocation) == Utilities.MD5Data(binaryData))
@@ -589,7 +641,7 @@ namespace Bloxstrap
             }
         }
 
-        private async void DownloadPackage(Package package)
+        private async Task DownloadPackage(Package package)
         {
             string packageUrl = $"{DeployManager.BaseUrl}/{VersionGuid}-{package.Name}";
             string packageLocation = Path.Combine(Directories.Downloads, package.Signature);
@@ -603,12 +655,13 @@ namespace Bloxstrap
                 if (calculatedMD5 != package.Signature)
                 {
                     Debug.WriteLine($"{package.Name} is corrupted ({calculatedMD5} != {package.Signature})! Deleting and re-downloading...");
-                    file.Delete();
+                file.Delete();
                 }
                 else
                 {
                     Debug.WriteLine($"{package.Name} is already downloaded, skipping...");
-                    Dialog.ProgressValue += ProgressIncrement;
+                    TotalDownloadedBytes += package.PackedSize;
+                    UpdateProgressbar();
                     return;
                 }
             }
@@ -619,7 +672,8 @@ namespace Bloxstrap
 
                 Debug.WriteLine($"Found existing version of {package.Name} ({robloxPackageLocation})! Copying to Downloads folder...");
                 File.Copy(robloxPackageLocation, packageLocation);
-                Dialog.ProgressValue += ProgressIncrement;
+                TotalDownloadedBytes += package.PackedSize;
+                UpdateProgressbar();
                 return;
             }
 
@@ -627,22 +681,34 @@ namespace Bloxstrap
             {
                 Debug.WriteLine($"Downloading {package.Name}...");
 
-                var response = await Program.HttpClient.GetAsync(packageUrl);
-
                 if (CancelFired)
                     return;
 
+                var response = await Program.HttpClient.GetAsync(packageUrl, HttpCompletionOption.ResponseHeadersRead);
+
+                var buffer = new byte[8192];
+
+                using (var stream = await response.Content.ReadAsStreamAsync())
                 using (var fileStream = new FileStream(packageLocation, FileMode.CreateNew))
                 {
-                    await response.Content.CopyToAsync(fileStream);
+                    while (true)
+                    {
+                        var bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
+                        if (bytesRead == 0)
+                            break; // we're done
+
+                        await fileStream.WriteAsync(buffer, 0, bytesRead);
+
+                        TotalDownloadedBytes += bytesRead;
+                        UpdateProgressbar();
+                    }
                 }
 
                 Debug.WriteLine($"Finished downloading {package.Name}!");
-                Dialog.ProgressValue += ProgressIncrement;
             }
         }
 
-        private void ExtractPackage(Package package)
+        private async void ExtractPackage(Package package)
         {
             if (CancelFired)
                 return;
@@ -654,7 +720,7 @@ namespace Bloxstrap
 
             Debug.WriteLine($"Extracting {package.Name} to {packageFolder}...");
 
-            using (ZipArchive archive = ZipFile.OpenRead(packageLocation))
+            using (ZipArchive archive = await Task.Run(() => ZipFile.OpenRead(packageLocation)))
             {
                 foreach (ZipArchiveEntry entry in archive.Entries)
                 {
@@ -666,7 +732,7 @@ namespace Bloxstrap
 
                     extractPath = Path.Combine(packageFolder, entry.FullName);
 
-                    Debug.WriteLine($"[{package.Name}] Writing {extractPath}...");
+                    //Debug.WriteLine($"[{package.Name}] Writing {extractPath}...");
 
                     directory = Path.GetDirectoryName(extractPath);
 
@@ -678,9 +744,13 @@ namespace Bloxstrap
                     if (File.Exists(extractPath))
                         File.Delete(extractPath);
 
-                    entry.ExtractToFile(extractPath);
+                    await Task.Run(() => entry.ExtractToFile(extractPath));
                 }
             }
+
+            Debug.WriteLine($"Finished extracting {package.Name}");
+
+            PackagesExtracted += 1;
         }
 
         private void ExtractFileFromPackage(string packageName, string fileName)
@@ -690,7 +760,7 @@ namespace Bloxstrap
             if (package is null)
                 return;
 
-            DownloadPackage(package);
+            DownloadPackage(package).GetAwaiter().GetResult();
 
             string packageLocation = Path.Combine(Directories.Downloads, package.Signature);
             string packageFolder = Path.Combine(VersionFolder, PackageDirectories[package.Name]);
@@ -710,6 +780,6 @@ namespace Bloxstrap
                 entry.ExtractToFile(fileLocation);
             }
         }
-        #endregion
+#endregion
     }
 }

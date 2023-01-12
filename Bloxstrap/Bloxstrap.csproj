@@ -10,12 +10,18 @@
     <PlatformTarget>AnyCPU</PlatformTarget>
     <Platforms>AnyCPU;x86</Platforms>
     <ApplicationIcon>Bloxstrap.ico</ApplicationIcon>
-    <Version>1.5.6</Version>
-    <FileVersion>1.5.6.0</FileVersion>
+    <Version>1.6.2</Version>
+    <FileVersion>1.6.2.0</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>
     <Content Include="Bloxstrap.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\Mods\OldCursor.png" />
+    <EmbeddedResource Include="Resources\Mods\OldDeath.ogg" />
+    <EmbeddedResource Include="Resources\Mods\OldFarCursor.png" />
   </ItemGroup>
 
   <ItemGroup>

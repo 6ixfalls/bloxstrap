@@ -34,7 +34,7 @@
                         <GroupBox Grid.Column="0" Header="Discord Rich Presence" Margin="10,10,5,5">
                             <StackPanel VerticalAlignment="Center">
                                 <CheckBox x:Name="CheckBoxDRPEnabled" Content=" Show game activity" Margin="5" VerticalAlignment="Top" IsChecked="{Binding DRPEnabled, Mode=TwoWay}" />
-                                <CheckBox x:Name="CheckBoxDRPButtons" Content=" Allow people to join" Margin="5" VerticalAlignment="Top" IsEnabled="{Binding IsChecked, ElementName=CheckBoxDRPEnabled, Mode=OneWay}" IsChecked="{Binding DRPButtons, Mode=TwoWay}" />
+                                <CheckBox x:Name="CheckBoxDRPButtons" Content=" Allow activity joining" Margin="5" VerticalAlignment="Top" IsEnabled="{Binding IsChecked, ElementName=CheckBoxDRPEnabled, Mode=OneWay}" IsChecked="{Binding DRPButtons, Mode=TwoWay}" />
                             </StackPanel>
                         </GroupBox>
                         <GroupBox Grid.Column="1" Header="FPS Unlocking" Margin="5,10,10,5">
@@ -107,6 +107,7 @@
                             <RowDefinition Height="*" />
                             <RowDefinition Height="*" />
                             <RowDefinition Height="*" />
+                            <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="100" />
@@ -117,18 +118,22 @@
                         <TextBlock Grid.Row="1" Grid.Column="1" Text="*Dark theme only applies to the Progress Dialog style" FontSize="10" VerticalAlignment="Center" Margin="0,0,0,5"  />
                         <TextBlock Grid.Row="2" Grid.Column="0" Text="Dialog" VerticalAlignment="Center" Margin="0,5,0,5" />
                         <ComboBox Grid.Row="2" Grid.Column="1" x:Name="ComboBoxDialog" VerticalAlignment="Center" Margin="0,5,0,5" ItemsSource="{Binding Dialogs.Keys, Mode=OneTime}" Text="{Binding Dialog, Mode=TwoWay}" />
-                        <TextBlock Grid.Row="3" Grid.Column="0" Text="Icon" VerticalAlignment="Center" Margin="0,5,0,5"  />
-                        <ComboBox Grid.Row="3" Grid.Column="1" x:Name="ComboBoxIcon" VerticalAlignment="Center" Margin="0,5,0,5" ItemsSource="{Binding Icons.Keys, Mode=OneTime}" Text="{Binding Icon, Mode=TwoWay}" />
+                        <TextBlock Grid.Row="3" Grid.Column="1" Text="Legacy Dialog styles don't handle DPI scaling very well" FontSize="10" VerticalAlignment="Center" Margin="0,0,0,5"  />
+                        <TextBlock Grid.Row="4" Grid.Column="0" Text="Icon" VerticalAlignment="Center" Margin="0,5,0,5"  />
+                        <ComboBox Grid.Row="4" Grid.Column="1" x:Name="ComboBoxIcon" VerticalAlignment="Center" Margin="0,5,0,5" ItemsSource="{Binding Icons.Keys, Mode=OneTime}" Text="{Binding Icon, Mode=TwoWay}" />
                     </Grid>
                     <Button x:Name="ButtonPreview" Content="Preview" Margin="0,5,0,0" VerticalAlignment="Bottom" Height="23" Click="ButtonPreview_Click" />
                 </StackPanel>
             </TabItem>
         </TabControl>
-        <Border Background="{DynamicResource ControlSelectedBackground}" BorderBrush="{DynamicResource ControlSelectedBorderBrush}" BorderThickness="1" Margin="-1,0,-1,-1" Height="42" VerticalAlignment="Bottom">
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                <Button x:Name="ButtonConfirm" Content="{Binding ConfirmButtonText, Mode=OneTime}" Width="66" Height="23" HorizontalAlignment="Right" Margin="0,0,10,0"  Click="ButtonConfirm_Click" />
-                <Button x:Name="ButtonCancel" Content="Cancel" Width="66" Height="23" HorizontalAlignment="Right" Margin="0,0,10,0" Click="ButtonCancel_Click" />
-            </StackPanel>
+        <Border Background="{DynamicResource ControlSelectedBackground}" BorderBrush="{DynamicResource ControlSelectedBorderBrush}" BorderThickness="1" Margin="-1,0,-1,0" Height="42" VerticalAlignment="Bottom">
+            <Grid>
+                <TextBlock Text="Like Bloxstrap? " VerticalAlignment="Center" Margin="10,0,0,0" ><Hyperlink NavigateUri="https://github.com/pizzaboxer/bloxstrap" RequestNavigate="Hyperlink_RequestNavigate">Leave a star on GitHub!</Hyperlink></TextBlock>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button x:Name="ButtonConfirm" Content="{Binding ConfirmButtonText, Mode=OneTime}" Width="66" Height="23" HorizontalAlignment="Right" Margin="0,0,10,0"  Click="ButtonConfirm_Click" />
+                    <Button x:Name="ButtonCancel" Content="Cancel" Width="66" Height="23" HorizontalAlignment="Right" Margin="0,0,10,0" Click="ButtonCancel_Click" />
+                </StackPanel>
+            </Grid>
         </Border>
     </Grid>
 </Window>
