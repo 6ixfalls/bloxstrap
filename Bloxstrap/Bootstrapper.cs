@@ -1,18 +1,22 @@
-﻿using System.Diagnostics;
+﻿using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Net.Http;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+using System.Windows;
 
 using Microsoft.Win32;
 
-using Bloxstrap.Enums;
-using Bloxstrap.Dialogs.BootstrapperDialogs;
+using Bloxstrap.Dialogs;
 using Bloxstrap.Helpers;
 using Bloxstrap.Helpers.Integrations;
 using Bloxstrap.Helpers.RSMM;
 using Bloxstrap.Models;
-using System.Net;
-using Bloxstrap.Properties;
 
 namespace Bloxstrap
 {
@@ -24,7 +28,6 @@ namespace Bloxstrap
         public const int ERROR_SUCCESS = 0;
         public const int ERROR_INSTALL_USEREXIT = 1602;
         public const int ERROR_INSTALL_FAILURE = 1603;
-        public const int ERROR_PRODUCT_UNINSTALLED = 1614;
 
         // in case a new package is added, you can find the corresponding directory
         // by opening the stock bootstrapper in a hex editor
@@ -54,107 +57,107 @@ namespace Bloxstrap
             { "extracontent-places.zip",       @"ExtraContent\places\" },
         };
 
-        private static readonly string AppSettings =
+        private const string AppSettings =
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
             "<Settings>\n" +
             "	<ContentFolder>content</ContentFolder>\n" +
             "	<BaseUrl>http://www.roblox.com</BaseUrl>\n" +
             "</Settings>\n";
 
-        private static readonly string ModReadme =
-            "This is where you can modify your Roblox files while preserving modifications\n" +
-            "whenever Roblox updates.\n" +
-            "\n" +
-            "For example, Modifications\\content\\sounds\\ouch.ogg will\n" +
-            "automatically overwrite Versions\\version-xx...\\content\\sounds\\ouch.ogg\n" +
-            "\n" +
-            "If you remove a file mod from here, Bloxstrap will restore the stock version\n" +
-            "of the file the next time it's launched.\n" +
-            "\n" +
-            "Any files added here to the root modification directory are ignored, so be sure\n" +
-            "that they're inside a folder.";
+        private readonly CancellationTokenSource _cancelTokenSource = new();
 
-        private string? LaunchCommandLine;
+        private static bool FreshInstall => String.IsNullOrEmpty(App.State.Prop.VersionGuid);
+        private static string DesktopShortcutLocation => Path.Combine(Directories.Desktop, "Play Roblox.lnk");
 
-        private string VersionGuid = null!;
-        private PackageManifest VersionPackageManifest = null!;
-        private string VersionFolder = null!;
+        private string? _launchCommandLine;
 
-        private readonly bool FreshInstall;
+        private string _versionGuid = null!;
+        private PackageManifest _versionPackageManifest = null!;
+        private string _versionFolder = null!;
 
-        private double ProgressIncrement;
-        private long TotalBytes = 0;
-        private long TotalDownloadedBytes = 0;
-        private int PackagesExtracted = 0;
-        private bool CancelFired = false;
+        private bool _isInstalling = false;
+        private double _progressIncrement;
+        private long _totalDownloadedBytes = 0;
+        private int _packagesExtracted = 0;
+        private bool _cancelFired = false;
 
-        public IBootstrapperDialog Dialog = null!;
+        public IBootstrapperDialog? Dialog = null;
         #endregion
 
         #region Core
         public Bootstrapper(string? launchCommandLine = null)
         {
-            LaunchCommandLine = launchCommandLine;
-            FreshInstall = String.IsNullOrEmpty(Program.Settings.VersionGuid);
+            _launchCommandLine = launchCommandLine;
         }
 
-        // this is called from BootstrapperStyleForm.SetupDialog()
+        private void SetStatus(string message)
+        {
+            App.Logger.WriteLine($"[Bootstrapper::SetStatus] {message}");
+
+            if (Dialog is not null)
+                Dialog.Message = message;
+        }
+
         public async Task Run()
         {
-            if (Program.IsQuiet)
-                Dialog.CloseDialog();
+            App.Logger.WriteLine("[Bootstrapper::Run] Running bootstrapper");
 
-            if (Program.IsUninstall)
+            if (App.IsUninstall)
             {
                 Uninstall();
                 return;
             }
 
 #if !DEBUG
-            if (!Program.IsFirstRun && Program.Settings.CheckForUpdates)
+            if (!App.IsFirstRun && App.Settings.Prop.CheckForUpdates)
                 await CheckForUpdates();
 #endif
 
             await CheckLatestVersion();
 
+            CheckInstallMigration();
+
             // if bloxstrap is installing for the first time but is running, prompt to close roblox
             // if roblox needs updating but is running, ignore update for now
-            if (!Directory.Exists(VersionFolder) && CheckIfRunning(true) || Program.Settings.VersionGuid != VersionGuid && !CheckIfRunning(false))
+            if (!Directory.Exists(_versionFolder) && CheckIfRunning(true) || App.State.Prop.VersionGuid != _versionGuid && !CheckIfRunning(false))
                 await InstallLatestVersion();
+
+            if (App.IsFirstRun)
+                App.ShouldSaveConfigs = true;
 
             await ApplyModifications();
 
-            if (Program.IsFirstRun)
-                Program.SettingsManager.ShouldSave = true;
-
-            if (Program.IsFirstRun || FreshInstall)
+            if (App.IsFirstRun || FreshInstall)
                 Register();
 
             CheckInstall();
 
             await RbxFpsUnlocker.CheckInstall();
             
-            Program.SettingsManager.Save();
+            App.Settings.Save();
+            App.State.Save();
 
-            
-            if (Program.IsFirstRun && Program.IsNoLaunch)
-                Dialog.ShowSuccess($"{Program.ProjectName} has successfully installed");
-            else if (!Program.IsNoLaunch)
+            if (App.IsFirstRun && App.IsNoLaunch)
+                Dialog?.ShowSuccess($"{App.ProjectName} has successfully installed");
+            else if (!App.IsNoLaunch)
                 await StartRoblox();
-
-            Program.Exit();
         }
 
         private async Task CheckForUpdates()
         {
-            string currentVersion = $"Bloxstrap v{Program.Version}";
+            string currentVersion = $"{App.ProjectName} v{App.Version}";
 
-            var releaseInfo = await Utilities.GetJson<GithubRelease>($"https://api.github.com/repos/{Program.ProjectRepository}/releases/latest");
+            App.Logger.WriteLine($"[Bootstrapper::CheckForUpdates] Checking for {App.ProjectName} updates...");
 
-            if (releaseInfo is null || releaseInfo.Name is null || releaseInfo.Assets is null || currentVersion == releaseInfo.Name)
+            var releaseInfo = await Utilities.GetJson<GithubRelease>($"https://api.github.com/repos/{App.ProjectRepository}/releases/latest");
+
+            if (releaseInfo?.Assets is null || currentVersion == releaseInfo.Name)
+            {
+                App.Logger.WriteLine($"[Bootstrapper::CheckForUpdates] No updates found");
                 return;
+            }
 
-            Dialog.Message = "Getting the latest Bloxstrap...";
+            SetStatus($"Getting the latest {App.ProjectName}...");
 
             // 64-bit is always the first option
             GithubReleaseAsset asset = releaseInfo.Assets[Environment.Is64BitOperatingSystem ? 0 : 1];
@@ -162,240 +165,384 @@ namespace Bloxstrap
 
             Directory.CreateDirectory(Directories.Updates);
 
-            Debug.WriteLine($"Downloading {releaseInfo.Name}...");
+            App.Logger.WriteLine($"[Bootstrapper::CheckForUpdates] Downloading {releaseInfo.Name}...");
 
             if (!File.Exists(downloadLocation))
             {
-                var response = await Program.HttpClient.GetAsync(asset.BrowserDownloadUrl);
+                var response = await App.HttpClient.GetAsync(asset.BrowserDownloadUrl);
 
-                using (var fileStream = new FileStream(Path.Combine(Directories.Updates, asset.Name), FileMode.CreateNew))
-                {
-                    await response.Content.CopyToAsync(fileStream);
-                }
+                await using var fileStream = new FileStream(Path.Combine(Directories.Updates, asset.Name), FileMode.CreateNew);
+                await response.Content.CopyToAsync(fileStream);
             }
 
-            Debug.WriteLine($"Starting {releaseInfo.Name}...");
+            App.Logger.WriteLine($"[Bootstrapper::CheckForUpdates] Starting {releaseInfo.Name}...");
 
             ProcessStartInfo startInfo = new()
             {
                 FileName = downloadLocation,
             };
 
-            foreach (string arg in Program.LaunchArgs)
+            foreach (string arg in App.LaunchArgs)
                 startInfo.ArgumentList.Add(arg);
+
+            App.Settings.Save();
 
             Process.Start(startInfo);
 
-            Program.Exit();
+            Environment.Exit(0);
         }
 
         private async Task CheckLatestVersion()
         {
-            Dialog.Message = "Connecting to Roblox...";
+            SetStatus("Connecting to Roblox...");
 
-            ClientVersion clientVersion = await DeployManager.GetLastDeploy(Program.Settings.Channel);
-            VersionGuid = clientVersion.VersionGuid;
-            VersionFolder = Path.Combine(Directories.Versions, VersionGuid);
-            VersionPackageManifest = await PackageManifest.Get(VersionGuid);
+            ClientVersion clientVersion = await App.DeployManager.GetLastDeploy();
+            _versionGuid = clientVersion.VersionGuid;
+            _versionFolder = Path.Combine(Directories.Versions, _versionGuid);
+            _versionPackageManifest = await PackageManifest.Get(_versionGuid);
+        }
+
+        private void CheckInstallMigration()
+        {
+            // check if we've changed our install location since the last time we started
+            // in which case, we'll have to copy over all our folders so we don't lose any mods and stuff
+
+            using RegistryKey? applicationKey = Registry.CurrentUser.OpenSubKey($@"Software\{App.ProjectName}", true);
+
+            string? oldInstallLocation = (string?)applicationKey?.GetValue("OldInstallLocation");
+
+            if (applicationKey is null || oldInstallLocation is null || oldInstallLocation == Directories.Base)
+                return;
+
+            SetStatus("Migrating install location...");
+
+            if (Directory.Exists(oldInstallLocation))
+            {
+                App.Logger.WriteLine($"[Bootstrapper::CheckInstallMigration] Moving all files in {oldInstallLocation} to {Directories.Base}...");
+
+                foreach (string oldFileLocation in Directory.GetFiles(oldInstallLocation, "*.*", SearchOption.AllDirectories))
+                {
+                    string relativeFile = oldFileLocation.Substring(oldInstallLocation.Length + 1);
+                    string newFileLocation = Path.Combine(Directories.Base, relativeFile);
+                    string? newDirectory = Path.GetDirectoryName(newFileLocation);
+
+                    try
+                    {
+                        if (!String.IsNullOrEmpty(newDirectory))
+                            Directory.CreateDirectory(newDirectory);
+
+                        File.Move(oldFileLocation, newFileLocation, true);
+                    }
+                    catch (Exception ex)
+                    {
+                        App.Logger.WriteLine($"[Bootstrapper::CheckInstallMigration] Failed to move {oldFileLocation} to {newFileLocation}! {ex}");
+                    }
+                }
+
+                try
+                {
+                    Directory.Delete(oldInstallLocation, true);
+                    App.Logger.WriteLine("[Bootstrapper::CheckInstallMigration] Deleted old install location");
+                }
+                catch (Exception ex)
+                {
+                    App.Logger.WriteLine($"[Bootstrapper::CheckInstallMigration] Failed to delete old install location! {ex}");
+                }
+            }
+
+            applicationKey.DeleteValue("OldInstallLocation");
+
+            // allow shortcuts to be re-registered
+            if (Directory.Exists(Directories.StartMenu))
+                Directory.Delete(Directories.StartMenu, true);
+
+            if (File.Exists(DesktopShortcutLocation))
+            {
+                File.Delete(DesktopShortcutLocation);
+                App.Settings.Prop.CreateDesktopIcon = true;
+            }
+
+            App.Logger.WriteLine("[Bootstrapper::CheckInstallMigration] Finished migrating install location!");
         }
 
         private bool CheckIfRunning(bool shutdown)
         {
+            App.Logger.WriteLine($"[Bootstrapper::CheckIfRunning] Checking if Roblox is running... (shutdown={shutdown})");
+
             Process[] processes = Process.GetProcessesByName("RobloxPlayerBeta");
 
             if (processes.Length == 0)
-                return false;
-
-            if (shutdown)
             {
-                Dialog.PromptShutdown();
-
-                try
-                {
-                    // try/catch just in case process was closed before prompt was answered
-
-                    foreach (Process process in processes)
-                    {
-                        process.CloseMainWindow();
-                        process.Close();
-                    }
-                }
-                catch (Exception) { }
+                App.Logger.WriteLine($"[Bootstrapper::CheckIfRunning] Roblox is not running");
+                return false;
             }
 
+            App.Logger.WriteLine($"[Bootstrapper::CheckIfRunning] Roblox is running, found {processes.Length} process(es)");
+
+            if (!shutdown) 
+                return true;
+
+            App.Logger.WriteLine($"[Bootstrapper::CheckIfRunning] Attempting to shutdown Roblox...");
+
+            Dialog?.PromptShutdown();
+
+            try
+            {
+                // try/catch just in case process was closed before prompt was answered
+
+                foreach (Process process in processes)
+                {
+                    process.CloseMainWindow();
+                    process.Close();
+                }
+            }
+            catch (Exception ex)
+            {
+                App.Logger.WriteLine($"[Bootstrapper::CheckIfRunning] Failed to close process! {ex}");
+            }
+
+            App.Logger.WriteLine($"[Bootstrapper::CheckIfRunning] All Roblox processes closed");
             return true;
         }
 
         private async Task StartRoblox()
         {
-            string startEventName = Program.ProjectName.Replace(" ", "") + "StartEvent";
+            string startEventName = App.ProjectName.Replace(" ", "") + "StartEvent";
 
-            Dialog.Message = "Starting Roblox...";
+            SetStatus("Starting Roblox...");
 
-            if (LaunchCommandLine == "--app" && Program.Settings.UseDisableAppPatch)
+            if (_launchCommandLine == "--app" && App.Settings.Prop.UseDisableAppPatch)
             {
                 Utilities.OpenWebsite("https://www.roblox.com/games");
                 return;
             }
 
             // launch time isn't really required for all launches, but it's usually just safest to do this
-            LaunchCommandLine += " --launchtime=" + DateTimeOffset.Now.ToUnixTimeMilliseconds();
+            _launchCommandLine += " --launchtime=" + DateTimeOffset.Now.ToUnixTimeMilliseconds();
 
-            if (Program.Settings.Channel.ToLower() != DeployManager.DefaultChannel.ToLower())
-                LaunchCommandLine += " -channel " + Program.Settings.Channel.ToLower();
+            if (App.Settings.Prop.Channel.ToLower() != DeployManager.DefaultChannel.ToLower())
+                _launchCommandLine += " -channel " + App.Settings.Prop.Channel.ToLower();
 
-            LaunchCommandLine  += " -startEvent " + startEventName;
+            _launchCommandLine  += " -startEvent " + startEventName;
+
+            // whether we should wait for roblox to exit to handle stuff in the background or clean up after roblox closes
+            bool shouldWait = false;
+            Process gameClient = Process.Start(Path.Combine(_versionFolder, "RobloxPlayerBeta.exe"), _launchCommandLine);
+            List<Process> autocloseProcesses = new();
+            DiscordRichPresence? richPresence = null;
+            Mutex? singletonMutex = null;
+
+            App.Logger.WriteLine($"[Bootstrapper::StartRoblox] Started Roblox (PID {gameClient.Id})");
 
             using (SystemEvent startEvent = new(startEventName))
             {
-                bool shouldWait = false;
-
-                Process gameClient = Process.Start(Path.Combine(VersionFolder, "RobloxPlayerBeta.exe"), LaunchCommandLine);
-                Process? rbxFpsUnlocker = null;
-                DiscordRichPresence? richPresence = null;
-
                 bool startEventFired = await startEvent.WaitForEvent();
 
                 startEvent.Close();
 
                 if (!startEventFired)
                     return;
+            }
+            
+            if (App.Settings.Prop.RFUEnabled && Process.GetProcessesByName(RbxFpsUnlocker.ApplicationName).Length == 0)
+            {
+                App.Logger.WriteLine("[Bootstrapper::StartRoblox] Using rbxfpsunlocker");
 
-                if (Program.Settings.RFUEnabled && Process.GetProcessesByName("rbxfpsunlocker").Length == 0)
+                ProcessStartInfo startInfo = new() 
+                { 
+                    WorkingDirectory = Path.Combine(Directories.Integrations, "rbxfpsunlocker"),
+                    FileName = Path.Combine(Directories.Integrations, @"rbxfpsunlocker\rbxfpsunlocker.exe")
+                }; 
+                
+                Process process = Process.Start(startInfo)!;
+
+                if (App.Settings.Prop.RFUAutoclose)
                 {
-                    ProcessStartInfo startInfo = new()
-                    {
-                        FileName = Path.Combine(Directories.Integrations, @"rbxfpsunlocker\rbxfpsunlocker.exe"),
-                        WorkingDirectory = Path.Combine(Directories.Integrations, "rbxfpsunlocker")
-                    };
-
-                    rbxFpsUnlocker = Process.Start(startInfo);
-
-                    if (Program.Settings.RFUAutoclose)
-                        shouldWait = true;
-                }
-
-                // event fired, wait for 3 seconds then close
-                await Task.Delay(3000);
-
-                // now we move onto handling rich presence
-                if (Program.Settings.UseDiscordRichPresence)
-                {
-                    richPresence = new DiscordRichPresence();
-                    richPresence.MonitorGameActivity();
-
                     shouldWait = true;
+                    autocloseProcesses.Add(process);
                 }
+            }
 
-                if (!shouldWait)
-                    return;
+            if (App.Settings.Prop.UseDiscordRichPresence)
+            {
+                App.Logger.WriteLine("[Bootstrapper::StartRoblox] Using Discord Rich Presence");
+                richPresence = new DiscordRichPresence();
+                shouldWait = true;
+            }
 
-                // keep bloxstrap open in the background
-                Dialog.CloseDialog();
-                await gameClient.WaitForExitAsync();
+            if (App.Settings.Prop.MultiInstanceLaunching)
+            {
+                App.Logger.WriteLine("[Bootstrapper::StartRoblox] Creating singleton mutex");
+                // this might be a bit problematic since this mutex will be released when the first launched instance is closed...
+                singletonMutex = new Mutex(true, "ROBLOX_singletonMutex");
+                shouldWait = true;
+            }
 
-                if (richPresence is not null)
-                    richPresence.Dispose();
+            // launch custom integrations now
+            foreach (CustomIntegration integration in App.Settings.Prop.CustomIntegrations)
+            {
+                App.Logger.WriteLine($"[Bootstrapper::StartRoblox] Launching custom integration '{integration.Name}' ({integration.Location} {integration.LaunchArgs} - autoclose is {integration.AutoClose})");
 
-                if (Program.Settings.RFUAutoclose && rbxFpsUnlocker is not null)
-                    rbxFpsUnlocker.Kill();
+                try
+                {
+                    Process process = Process.Start(integration.Location, integration.LaunchArgs);
+
+                    if (integration.AutoClose)
+                    {
+                        shouldWait = true;
+                        autocloseProcesses.Add(process);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    App.Logger.WriteLine($"[Bootstrapper::StartRoblox] Failed to launch integration '{integration.Name}'! ({ex.Message})");
+                }
+            }
+
+            // event fired, wait for 3 seconds then close
+            await Task.Delay(3000);
+            Dialog?.CloseBootstrapper();
+
+            // keep bloxstrap open in the background if needed
+            if (!shouldWait)
+                return;
+
+            richPresence?.MonitorGameActivity();
+
+            App.Logger.WriteLine("[Bootstrapper::StartRoblox] Waiting for Roblox to close");
+            await gameClient.WaitForExitAsync();
+            App.Logger.WriteLine($"[Bootstrapper::StartRoblox] Roblox exited with code {gameClient.ExitCode}");
+
+            richPresence?.Dispose();
+
+            foreach (Process process in autocloseProcesses)
+            {
+                if (process.HasExited)
+                    continue;
+
+                App.Logger.WriteLine($"[Bootstrapper::StartRoblox] Autoclosing process '{process.ProcessName}' (PID {process.Id})");
+                process.Kill();
             }
         }
 
-        public void CancelButtonClicked()
+        public void CancelInstall()
         {
-            if (!Dialog.CancelEnabled)
+            if (!_isInstalling)
             {
-                Program.Exit(ERROR_INSTALL_USEREXIT);
+                App.Terminate(ERROR_INSTALL_USEREXIT);
                 return;
             }
 
-            CancelFired = true;
+            App.Logger.WriteLine("[Bootstrapper::CancelInstall] Cancelling install...");
+
+            _cancelTokenSource.Cancel();
+            _cancelFired = true;
 
             try
             {
-                if (Program.IsFirstRun)
+                // clean up install
+                if (App.IsFirstRun)
                     Directory.Delete(Directories.Base, true);
-                else if (Directory.Exists(VersionFolder))
-                    Directory.Delete(VersionFolder, true);
+                else if (Directory.Exists(_versionFolder))
+                    Directory.Delete(_versionFolder, true);
             }
-            catch (Exception) { }
- 
-            Program.Exit(ERROR_INSTALL_USEREXIT);
+            catch (Exception ex)
+            {
+                App.Logger.WriteLine("[Bootstrapper::CancelInstall] Could not fully clean up installation!");
+                App.Logger.WriteLine($"[Bootstrapper::CancelInstall] {ex}");
+            }
+
+            App.Terminate(ERROR_INSTALL_USEREXIT);
         }
 #endregion
 
-#region App Install
+        #region App Install
         public static void Register()
         {
-            RegistryKey applicationKey = Registry.CurrentUser.CreateSubKey($@"Software\{Program.ProjectName}");
-
-            // new install location selected, delete old one
-            string? oldInstallLocation = (string?)applicationKey.GetValue("OldInstallLocation");
-            if (!String.IsNullOrEmpty(oldInstallLocation) && oldInstallLocation != Directories.Base)
+            using (RegistryKey applicationKey = Registry.CurrentUser.CreateSubKey($@"Software\{App.ProjectName}"))
             {
-                try
-                {
-                    if (Directory.Exists(oldInstallLocation))
-                        Directory.Delete(oldInstallLocation, true);
-                }
-                catch (Exception) { }
-
-                applicationKey.DeleteValue("OldInstallLocation");
+                applicationKey.SetValue("InstallLocation", Directories.Base);
             }
 
-            applicationKey.SetValue("InstallLocation", Directories.Base);
-            applicationKey.Close();
-
             // set uninstall key
-            RegistryKey uninstallKey = Registry.CurrentUser.CreateSubKey($@"Software\Microsoft\Windows\CurrentVersion\Uninstall\{Program.ProjectName}");
-            uninstallKey.SetValue("DisplayIcon", $"{Directories.App},0");
-            uninstallKey.SetValue("DisplayName", Program.ProjectName);
-            uninstallKey.SetValue("DisplayVersion", Program.Version);
+            using (RegistryKey uninstallKey = Registry.CurrentUser.CreateSubKey($@"Software\Microsoft\Windows\CurrentVersion\Uninstall\{App.ProjectName}"))
+            {
+                uninstallKey.SetValue("DisplayIcon", $"{Directories.Application},0");
+                uninstallKey.SetValue("DisplayName", App.ProjectName);
+                uninstallKey.SetValue("DisplayVersion", App.Version);
 
-            if (uninstallKey.GetValue("InstallDate") is null)
-                uninstallKey.SetValue("InstallDate", DateTime.Now.ToString("yyyyMMdd"));
+                if (uninstallKey.GetValue("InstallDate") is null)
+                    uninstallKey.SetValue("InstallDate", DateTime.Now.ToString("yyyyMMdd"));
 
-            uninstallKey.SetValue("InstallLocation", Directories.Base);
-            uninstallKey.SetValue("NoRepair", 1);
-            uninstallKey.SetValue("Publisher", "6ixfalls");
-            uninstallKey.SetValue("ModifyPath", $"\"{Directories.App}\" -preferences");
-            uninstallKey.SetValue("QuietUninstallString", $"\"{Directories.App}\" -uninstall -quiet");
-            uninstallKey.SetValue("UninstallString", $"\"{Directories.App}\" -uninstall");
-            uninstallKey.SetValue("URLInfoAbout", $"https://github.com/{Program.ProjectRepository}");
-            uninstallKey.SetValue("URLUpdateInfo", $"https://github.com/{Program.ProjectRepository}/releases/latest");
-            uninstallKey.Close();
+                uninstallKey.SetValue("InstallLocation", Directories.Base);
+                uninstallKey.SetValue("NoRepair", 1);
+                uninstallKey.SetValue("Publisher", "pizzaboxer");
+                uninstallKey.SetValue("ModifyPath", $"\"{Directories.Application}\" -menu");
+                uninstallKey.SetValue("QuietUninstallString", $"\"{Directories.Application}\" -uninstall -quiet");
+                uninstallKey.SetValue("UninstallString", $"\"{Directories.Application}\" -uninstall");
+                uninstallKey.SetValue("URLInfoAbout", $"https://github.com/{App.ProjectRepository}");
+                uninstallKey.SetValue("URLUpdateInfo", $"https://github.com/{App.ProjectRepository}/releases/latest");
+            }
+
+            App.Logger.WriteLine("[Bootstrapper::StartRoblox] Registered application");
         }
 
         public static void CheckInstall()
         {
+            App.Logger.WriteLine("[Bootstrapper::StartRoblox] Checking install");
+
             // check if launch uri is set to our bootstrapper
             // this doesn't go under register, so we check every launch
             // just in case the stock bootstrapper changes it back
 
-            Protocol.Register("roblox", "Roblox", Directories.App);
-            Protocol.Register("roblox-player", "Roblox", Directories.App);
+            Protocol.Register("roblox", "Roblox", Directories.Application);
+            Protocol.Register("roblox-player", "Roblox", Directories.Application);
 
             // in case the user is reinstalling
-            if (File.Exists(Directories.App) && Program.IsFirstRun)
-                File.Delete(Directories.App);
+            if (File.Exists(Directories.Application) && App.IsFirstRun)
+                File.Delete(Directories.Application);
 
             // check to make sure bootstrapper is in the install folder
-            if (!File.Exists(Directories.App) && Environment.ProcessPath is not null)
-                File.Copy(Environment.ProcessPath, Directories.App);
+            if (!File.Exists(Directories.Application) && Environment.ProcessPath is not null)
+                File.Copy(Environment.ProcessPath, Directories.Application);
 
             // this SHOULD go under Register(),
             // but then people who have Bloxstrap v1.0.0 installed won't have this without a reinstall
             // maybe in a later version?
-            if (!Directory.Exists(Program.StartMenu))
+            if (!Directory.Exists(Directories.StartMenu))
             {
-                Directory.CreateDirectory(Program.StartMenu);
+                Directory.CreateDirectory(Directories.StartMenu);
 
-                ShellLink.Shortcut.CreateShortcut(Directories.App, "", Directories.App, 0)
-                    .WriteToFile(Path.Combine(Program.StartMenu, "Play Roblox.lnk"));
+                ShellLink.Shortcut.CreateShortcut(Directories.Application, "", Directories.Application, 0)
+                    .WriteToFile(Path.Combine(Directories.StartMenu, "Play Roblox.lnk"));
 
-                ShellLink.Shortcut.CreateShortcut(Directories.App, "-preferences", Directories.App, 0)
-                    .WriteToFile(Path.Combine(Program.StartMenu, $"Configure {Program.ProjectName}.lnk"));
+                ShellLink.Shortcut.CreateShortcut(Directories.Application, "-menu", Directories.Application, 0)
+                    .WriteToFile(Path.Combine(Directories.StartMenu, $"{App.ProjectName} Menu.lnk"));
+            }
+            else
+            {
+                // v2.0.0 - rebadge configuration menu as just "Bloxstrap Menu"
+                string oldMenuShortcut = Path.Combine(Directories.StartMenu, $"Configure {App.ProjectName}.lnk");
+                string newMenuShortcut = Path.Combine(Directories.StartMenu, $"{App.ProjectName} Menu.lnk");
+
+                if (File.Exists(oldMenuShortcut))
+                    File.Delete(oldMenuShortcut);
+
+                if (!File.Exists(newMenuShortcut))
+                    ShellLink.Shortcut.CreateShortcut(Directories.Application, "-menu", Directories.Application, 0)
+                        .WriteToFile(newMenuShortcut);
+            }
+
+            if (App.Settings.Prop.CreateDesktopIcon)
+            {
+                if (!File.Exists(DesktopShortcutLocation))
+                {
+                    ShellLink.Shortcut.CreateShortcut(Directories.Application, "", Directories.Application, 0)
+                        .WriteToFile(DesktopShortcutLocation);
+                }
+
+                // one-time toggle, set it back to false
+                App.Settings.Prop.CreateDesktopIcon = false;
             }
         }
 
@@ -403,9 +550,10 @@ namespace Bloxstrap
         {
             CheckIfRunning(true);
 
-            Dialog.Message = $"Uninstalling {Program.ProjectName}...";
+            SetStatus($"Uninstalling {App.ProjectName}...");
 
-            Program.SettingsManager.ShouldSave = false;
+            //App.Settings.ShouldSave = false;
+            App.ShouldSaveConfigs = false;
 
             // check if stock bootstrapper is still installed
             RegistryKey? bootstrapperKey = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\roblox-player");
@@ -427,151 +575,180 @@ namespace Bloxstrap
             try
             {
                 // delete application key
-                Registry.CurrentUser.DeleteSubKey($@"Software\{Program.ProjectName}");
+                Registry.CurrentUser.DeleteSubKey($@"Software\{App.ProjectName}");
 
                 // delete start menu folder
-                Directory.Delete(Program.StartMenu, true);
+                Directory.Delete(Directories.StartMenu, true);
+
+                // delete desktop shortcut
+                File.Delete(Path.Combine(Directories.Desktop, "Play Roblox.lnk"));
 
                 // delete uninstall key
-                Registry.CurrentUser.DeleteSubKey($@"Software\Microsoft\Windows\CurrentVersion\Uninstall\{Program.ProjectName}");
+                Registry.CurrentUser.DeleteSubKey($@"Software\Microsoft\Windows\CurrentVersion\Uninstall\{App.ProjectName}");
 
                 // delete installation folder
                 // (should delete everything except bloxstrap itself)
                 Directory.Delete(Directories.Base, true);
             }
-            catch (Exception) { }
+            catch (Exception ex) 
+            {
+                App.Logger.WriteLine($"Could not fully uninstall! ({ex})");
+            }
 
-            Dialog.ShowSuccess($"{Program.ProjectName} has succesfully uninstalled");
-
-            Program.Exit();
+            Dialog?.ShowSuccess($"{App.ProjectName} has succesfully uninstalled");
         }
 #endregion
 
-#region Roblox Install
+        #region Roblox Install
         private void UpdateProgressbar()
         {
-            int newProgress = (int)Math.Floor(ProgressIncrement * TotalDownloadedBytes);
-            Dialog.ProgressValue = newProgress;
+            int newProgress = (int)Math.Floor(_progressIncrement * _totalDownloadedBytes);
+
+            // bugcheck: if we're restoring a file from a package, it'll incorrectly increment the progress beyond 100
+            // too lazy to fix properly so lol
+            if (newProgress > 100)
+                return;
+
+            if (Dialog is not null)
+                Dialog.ProgressValue = newProgress;
         }
 
         private async Task InstallLatestVersion()
         {
-            if (FreshInstall)
-                Dialog.Message = "Installing Roblox...";
-            else
-                Dialog.Message = "Upgrading Roblox...";
+            _isInstalling = true;
+
+            SetStatus(FreshInstall ? "Installing Roblox..." : "Upgrading Roblox...");
+
+            // check if we have at least 300 megabytes of free disk space
+            if (Utilities.GetFreeDiskSpace(Directories.Base) < 1024*1024*300)
+            {
+                App.ShowMessageBox($"{App.ProjectName} requires at least 300 MB of disk space to install Roblox. Please free up some disk space and try again.", MessageBoxImage.Error);
+                App.Terminate(ERROR_INSTALL_FAILURE);
+                return;
+            }
 
             Directory.CreateDirectory(Directories.Base);
 
-            Dialog.CancelEnabled = true;
-
-            Dialog.ProgressStyle = ProgressBarStyle.Continuous;
+            if (Dialog is not null)
+            {
+                Dialog.CancelEnabled = true;
+                Dialog.ProgressStyle = ProgressBarStyle.Continuous;
+            }
 
             // compute total bytes to download
-
-            foreach (Package package in VersionPackageManifest)
-                TotalBytes += package.PackedSize;
-
-            ProgressIncrement = (double)1 / TotalBytes * 100;
+            _progressIncrement = (double)100 / _versionPackageManifest.Sum(package => package.PackedSize);
 
             Directory.CreateDirectory(Directories.Downloads);
             Directory.CreateDirectory(Directories.Versions);
 
-            foreach (Package package in VersionPackageManifest)
+            foreach (Package package in _versionPackageManifest)
             {
+                if (_cancelFired)
+                    return;
+
                 // download all the packages synchronously
                 await DownloadPackage(package);
 
-                // extract the package immediately after download
+                // extract the package immediately after download asynchronously
                 ExtractPackage(package);
             }
+
+            if (_cancelFired) 
+                return;
 
             // allow progress bar to 100% before continuing (purely ux reasons lol)
             await Task.Delay(1000);
 
-            Dialog.ProgressStyle = ProgressBarStyle.Marquee;
-
-            Dialog.Message = "Configuring Roblox...";
+            if (Dialog is not null)
+            {
+                Dialog.ProgressStyle = ProgressBarStyle.Marquee;
+                SetStatus("Configuring Roblox...");
+            }
 
             // wait for all packages to finish extracting
-            while (PackagesExtracted < VersionPackageManifest.Count)
+            while (_packagesExtracted < _versionPackageManifest.Count)
             {
                 await Task.Delay(100);
             }
 
-            string appSettingsLocation = Path.Combine(VersionFolder, "AppSettings.xml");
+            string appSettingsLocation = Path.Combine(_versionFolder, "AppSettings.xml");
             await File.WriteAllTextAsync(appSettingsLocation, AppSettings);
+
+            if (_cancelFired)
+                return;
 
             if (!FreshInstall)
             {
+                ReShade.SynchronizeConfigFile();
+
                 // let's take this opportunity to delete any packages we don't need anymore
                 foreach (string filename in Directory.GetFiles(Directories.Downloads))
                 {
-                    if (!VersionPackageManifest.Exists(package => filename.Contains(package.Signature)))
+                    if (!_versionPackageManifest.Exists(package => filename.Contains(package.Signature)))
+                    {
+                        App.Logger.WriteLine($"Deleting unused package {filename}");
                         File.Delete(filename);
+                    }
                 }
 
-                string oldVersionFolder = Path.Combine(Directories.Versions, Program.Settings.VersionGuid);
+                string oldVersionFolder = Path.Combine(Directories.Versions, App.State.Prop.VersionGuid);
 
-                if (VersionGuid != Program.Settings.VersionGuid && Directory.Exists(oldVersionFolder))
+                if (_versionGuid != App.State.Prop.VersionGuid && Directory.Exists(oldVersionFolder))
                 {
                     // and also to delete our old version folder
                     Directory.Delete(oldVersionFolder, true);
                 }
             }
 
-            Dialog.CancelEnabled = false;
+            if (Dialog is not null)
+                Dialog.CancelEnabled = false;
 
-            Program.Settings.VersionGuid = VersionGuid;
+            App.State.Prop.VersionGuid = _versionGuid;
+
+            _isInstalling = false;
         }
 
         private async Task ApplyModifications()
         {
-            Dialog.Message = "Applying Roblox modifications...";
+            SetStatus("Applying Roblox modifications...");
 
             string modFolder = Path.Combine(Directories.Modifications);
-            string manifestFile = Path.Combine(Directories.Base, "ModManifest.txt");
 
-            List<string> manifestFiles = new();
+            // manifest has been moved to State.json
+            File.Delete(Path.Combine(Directories.Base, "ModManifest.txt"));
+
             List<string> modFolderFiles = new();
 
             if (!Directory.Exists(modFolder))
-            {
                 Directory.CreateDirectory(modFolder);
-                await File.WriteAllTextAsync(Path.Combine(modFolder, "README.txt"), ModReadme);
-            }
 
-            await CheckModPreset(Program.Settings.UseOldDeathSound, @"content\sounds\ouch.ogg", "OldDeath.ogg");
-            await CheckModPreset(Program.Settings.UseOldMouseCursor, @"content\textures\Cursors\KeyboardMouse\ArrowCursor.png", "OldCursor.png");
-            await CheckModPreset(Program.Settings.UseOldMouseCursor, @"content\textures\Cursors\KeyboardMouse\ArrowFarCursor.png", "OldFarCursor.png");
-            await CheckModPreset(Program.Settings.UseDisableAppPatch, @"ExtraContent\places\Mobile.rbxl", "");
+            await CheckModPreset(App.Settings.Prop.UseOldDeathSound, @"content\sounds\ouch.ogg", "OldDeath.ogg");
+            await CheckModPreset(App.Settings.Prop.UseOldMouseCursor, @"content\textures\Cursors\KeyboardMouse\ArrowCursor.png", "OldCursor.png");
+            await CheckModPreset(App.Settings.Prop.UseOldMouseCursor, @"content\textures\Cursors\KeyboardMouse\ArrowFarCursor.png", "OldFarCursor.png");
+            await CheckModPreset(App.Settings.Prop.UseDisableAppPatch, @"ExtraContent\places\Mobile.rbxl", "");
+
+            await ReShade.CheckModifications();
 
             foreach (string file in Directory.GetFiles(modFolder, "*.*", SearchOption.AllDirectories))
             {
                 // get relative directory path
                 string relativeFile = file.Substring(modFolder.Length + 1);
 
-                // ignore files placed in the root directory
-                if (!relativeFile.Contains('\\'))
+                // v1.7.0 - README has been moved to the preferences menu now
+                if (relativeFile == "README.txt")
+                {
+                    File.Delete(file);
                     continue;
+                }
 
                 modFolderFiles.Add(relativeFile);
             }
-
-            // the manifest is primarily here to keep track of what files have been
-            // deleted from the modifications folder, so that we know when to restore the
-            // original files from the downloaded packages
-
-            if (File.Exists(manifestFile))
-                manifestFiles = (await File.ReadAllLinesAsync(manifestFile)).ToList();
-            else
-                manifestFiles = modFolderFiles;
 
             // copy and overwrite
             foreach (string file in modFolderFiles)
             {
                 string fileModFolder = Path.Combine(modFolder, file);
-                string fileVersionFolder = Path.Combine(VersionFolder, file);
+                string fileVersionFolder = Path.Combine(_versionFolder, file);
 
                 if (File.Exists(fileVersionFolder))
                 {
@@ -590,8 +767,10 @@ namespace Bloxstrap
                 File.SetAttributes(fileVersionFolder, File.GetAttributes(fileModFolder) & ~FileAttributes.ReadOnly);
             }
 
+            // the manifest is primarily here to keep track of what files have been
+            // deleted from the modifications folder, so that we know when to restore the original files from the downloaded packages
             // now check for files that have been deleted from the mod folder according to the manifest
-            foreach (string fileLocation in manifestFiles)
+            foreach (string fileLocation in App.State.Prop.ModManifest)
             {
                 if (modFolderFiles.Contains(fileLocation))
                     continue;
@@ -605,6 +784,10 @@ namespace Bloxstrap
                 catch (InvalidOperationException)
                 {
                     // package doesn't exist, likely mistakenly placed file
+                    string versionFileLocation = Path.Combine(_versionFolder, fileLocation);
+
+                    File.Delete(versionFileLocation);
+
                     continue;
                 }
 
@@ -613,7 +796,8 @@ namespace Bloxstrap
                 ExtractFileFromPackage(packageDirectory.Key, fileName);
             }
 
-            File.WriteAllLines(manifestFile, modFolderFiles);
+            App.State.Prop.ModManifest = modFolderFiles;
+            App.State.Save();
         }
 
         private static async Task CheckModPreset(bool condition, string location, string name)
@@ -643,9 +827,12 @@ namespace Bloxstrap
 
         private async Task DownloadPackage(Package package)
         {
-            string packageUrl = $"{DeployManager.BaseUrl}/{VersionGuid}-{package.Name}";
+            if (_cancelFired)
+                return;
+
+            string packageUrl = $"{App.DeployManager.BaseUrl}/{_versionGuid}-{package.Name}";
             string packageLocation = Path.Combine(Directories.Downloads, package.Signature);
-            string robloxPackageLocation = Path.Combine(Program.LocalAppData, "Roblox", "Downloads", package.Signature);
+            string robloxPackageLocation = Path.Combine(Directories.LocalAppData, "Roblox", "Downloads", package.Signature);
 
             if (File.Exists(packageLocation))
             {
@@ -654,13 +841,13 @@ namespace Bloxstrap
                 string calculatedMD5 = Utilities.MD5File(packageLocation);
                 if (calculatedMD5 != package.Signature)
                 {
-                    Debug.WriteLine($"{package.Name} is corrupted ({calculatedMD5} != {package.Signature})! Deleting and re-downloading...");
-                file.Delete();
+                    App.Logger.WriteLine($"[Bootstrapper::DownloadPackage] {package.Name} is corrupted ({calculatedMD5} != {package.Signature})! Deleting and re-downloading...");
+                    file.Delete();
                 }
                 else
                 {
-                    Debug.WriteLine($"{package.Name} is already downloaded, skipping...");
-                    TotalDownloadedBytes += package.PackedSize;
+                    App.Logger.WriteLine($"[Bootstrapper::DownloadPackage] {package.Name} is already downloaded, skipping...");
+                    _totalDownloadedBytes += package.PackedSize;
                     UpdateProgressbar();
                     return;
                 }
@@ -670,61 +857,65 @@ namespace Bloxstrap
                 // let's cheat! if the stock bootstrapper already previously downloaded the file,
                 // then we can just copy the one from there
 
-                Debug.WriteLine($"Found existing version of {package.Name} ({robloxPackageLocation})! Copying to Downloads folder...");
+                App.Logger.WriteLine($"[Bootstrapper::DownloadPackage] Found existing version of {package.Name} ({robloxPackageLocation})! Copying to Downloads folder...");
                 File.Copy(robloxPackageLocation, packageLocation);
-                TotalDownloadedBytes += package.PackedSize;
+                _totalDownloadedBytes += package.PackedSize;
                 UpdateProgressbar();
                 return;
             }
 
             if (!File.Exists(packageLocation))
             {
-                Debug.WriteLine($"Downloading {package.Name}...");
+                App.Logger.WriteLine($"[Bootstrapper::DownloadPackage] Downloading {package.Name} ({package.Signature})...");
 
-                if (CancelFired)
-                    return;
-
-                var response = await Program.HttpClient.GetAsync(packageUrl, HttpCompletionOption.ResponseHeadersRead);
-
-                var buffer = new byte[8192];
-
-                using (var stream = await response.Content.ReadAsStreamAsync())
-                using (var fileStream = new FileStream(packageLocation, FileMode.CreateNew))
                 {
+                    var response = await App.HttpClient.GetAsync(packageUrl, HttpCompletionOption.ResponseHeadersRead, _cancelTokenSource.Token);
+                    var buffer = new byte[4096];
+
+                    await using var stream = await response.Content.ReadAsStreamAsync(_cancelTokenSource.Token);
+                    await using var fileStream = new FileStream(packageLocation, FileMode.CreateNew, FileAccess.Write, FileShare.Delete); 
+                    
                     while (true)
                     {
-                        var bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
+                        if (_cancelFired)
+                        {
+                            stream.Close();
+                            fileStream.Close();
+                            return;
+                        }
+
+                        var bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, _cancelTokenSource.Token);
+
                         if (bytesRead == 0)
                             break; // we're done
 
-                        await fileStream.WriteAsync(buffer, 0, bytesRead);
+                        await fileStream.WriteAsync(buffer, 0, bytesRead, _cancelTokenSource.Token);
 
-                        TotalDownloadedBytes += bytesRead;
+                        _totalDownloadedBytes += bytesRead;
                         UpdateProgressbar();
                     }
                 }
 
-                Debug.WriteLine($"Finished downloading {package.Name}!");
+                App.Logger.WriteLine($"[Bootstrapper::DownloadPackage] Finished downloading {package.Name}!");
             }
         }
 
         private async void ExtractPackage(Package package)
         {
-            if (CancelFired)
+            if (_cancelFired)
                 return;
 
             string packageLocation = Path.Combine(Directories.Downloads, package.Signature);
-            string packageFolder = Path.Combine(VersionFolder, PackageDirectories[package.Name]);
+            string packageFolder = Path.Combine(_versionFolder, PackageDirectories[package.Name]);
             string extractPath;
-            string? directory;
 
-            Debug.WriteLine($"Extracting {package.Name} to {packageFolder}...");
+            App.Logger.WriteLine($"[Bootstrapper::ExtractPackage] Extracting {package.Name} to {packageFolder}...");
 
             using (ZipArchive archive = await Task.Run(() => ZipFile.OpenRead(packageLocation)))
             {
                 foreach (ZipArchiveEntry entry in archive.Entries)
                 {
-                    if (CancelFired)
+                    if (_cancelFired)
                         return;
 
                     if (entry.FullName.EndsWith('\\'))
@@ -732,30 +923,27 @@ namespace Bloxstrap
 
                     extractPath = Path.Combine(packageFolder, entry.FullName);
 
-                    //Debug.WriteLine($"[{package.Name}] Writing {extractPath}...");
+                    //App.Logger.WriteLine($"[{package.Name}] Writing {extractPath}...");
 
-                    directory = Path.GetDirectoryName(extractPath);
+                    string? directory = Path.GetDirectoryName(extractPath);
 
                     if (directory is null)
                         continue;
 
                     Directory.CreateDirectory(directory);
 
-                    if (File.Exists(extractPath))
-                        File.Delete(extractPath);
-
-                    await Task.Run(() => entry.ExtractToFile(extractPath));
+                    await Task.Run(() => entry.ExtractToFile(extractPath, true));
                 }
             }
 
-            Debug.WriteLine($"Finished extracting {package.Name}");
+            App.Logger.WriteLine($"[Bootstrapper::ExtractPackage] Finished extracting {package.Name}");
 
-            PackagesExtracted += 1;
+            _packagesExtracted += 1;
         }
 
         private void ExtractFileFromPackage(string packageName, string fileName)
         {
-            Package? package = VersionPackageManifest.Find(x => x.Name == packageName);
+            Package? package = _versionPackageManifest.Find(x => x.Name == packageName);
 
             if (package is null)
                 return;
@@ -763,22 +951,20 @@ namespace Bloxstrap
             DownloadPackage(package).GetAwaiter().GetResult();
 
             string packageLocation = Path.Combine(Directories.Downloads, package.Signature);
-            string packageFolder = Path.Combine(VersionFolder, PackageDirectories[package.Name]);
+            string packageFolder = Path.Combine(_versionFolder, PackageDirectories[package.Name]);
 
-            using (ZipArchive archive = ZipFile.OpenRead(packageLocation))
-            {
-                ZipArchiveEntry? entry = archive.Entries.Where(x => x.FullName == fileName).FirstOrDefault();
+            using ZipArchive archive = ZipFile.OpenRead(packageLocation);
 
-                if (entry is null)
-                    return;
+            ZipArchiveEntry? entry = archive.Entries.FirstOrDefault(x => x.FullName == fileName);
 
-                string fileLocation = Path.Combine(packageFolder, entry.FullName);
+            if (entry is null)
+                return;
 
-                if (File.Exists(fileLocation))
-                    File.Delete(fileLocation);
+            string fileLocation = Path.Combine(packageFolder, entry.FullName);
+                
+            File.Delete(fileLocation);
 
-                entry.ExtractToFile(fileLocation);
-            }
+            entry.ExtractToFile(fileLocation);
         }
 #endregion
     }

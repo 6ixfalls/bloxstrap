@@ -1,6 +1,10 @@
-﻿using System.Diagnostics;
+﻿using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.Text;
 using System.Web;
+using System.Windows;
+
 using Microsoft.Win32;
 
 namespace Bloxstrap.Helpers
@@ -36,7 +40,7 @@ namespace Bloxstrap.Helpers
                 key = keyvalPair[0];
                 val = keyvalPair[1];
 
-                if (!UriKeyArgMap.ContainsKey(key) || String.IsNullOrEmpty(val))
+                if (!UriKeyArgMap.ContainsKey(key) || string.IsNullOrEmpty(val))
                     continue;
 
                 if (key == "launchmode" && val == "play")
@@ -47,17 +51,20 @@ namespace Bloxstrap.Helpers
 
                 if (key == "channel")
                 {
-                    if (val.ToLower() != Program.Settings.Channel.ToLower())
+                    if (val.ToLower() != App.Settings.Prop.Channel.ToLower())
                     {
-                        DialogResult result = Program.ShowMessageBox(
-                            $"{Program.ProjectName} was launched with the Roblox build channel set to {val}, however your current preferred channel is {Program.Settings.Channel}.\n\n" +
-                            $"Would you like to switch channels from {Program.Settings.Channel} to {val}?",
-                            MessageBoxIcon.Question,
-                            MessageBoxButtons.YesNo
+                        MessageBoxResult result = !App.Settings.Prop.PromptChannelChange ? MessageBoxResult.Yes : App.ShowMessageBox(
+                            $"{App.ProjectName} was launched with the Roblox build channel set to {val}, however your current preferred channel is {App.Settings.Prop.Channel}.\n\n" +
+                            $"Would you like to switch channels from {App.Settings.Prop.Channel} to {val}?",
+                            MessageBoxImage.Question,
+                            MessageBoxButton.YesNo
                         );
 
-                        if (result == DialogResult.Yes)
-                            Program.Settings.Channel = val;
+                        if (result == MessageBoxResult.Yes)
+                        {
+                            App.Logger.WriteLine($"[Protocol::ParseUri] Changed Roblox build channel from {App.Settings.Prop.Channel} to {val}");
+                            App.Settings.Prop.Channel = val;
+                        }
                     }
 
                     // we'll set the arg when launching
@@ -100,9 +107,9 @@ namespace Bloxstrap.Helpers
             {
                 Registry.CurrentUser.DeleteSubKeyTree($@"Software\Classes\{key}");
             }
-            catch (Exception e) 
+            catch (Exception ex) 
             {
-                Debug.WriteLine($"Failed to unregister {key}: {e}");
+                App.Logger.WriteLine($"[Protocol::Unregister] Failed to unregister {key}: {ex}");
             }
         }
     }

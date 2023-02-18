@@ -1,12 +1,9 @@
-﻿using System.Diagnostics;
+﻿using System;
+using System.Diagnostics;
 using System.IO;
-using System.Net.Http;
-using System.Text.Json;
-
-using Newtonsoft.Json.Linq;
-
-using Bloxstrap.Models;
-using Bloxstrap.Dialogs;
+using System.Windows;
+using Bloxstrap.Enums;
+using Bloxstrap.Views;
 
 namespace Bloxstrap.Helpers
 {
@@ -14,55 +11,60 @@ namespace Bloxstrap.Helpers
     {
         public static void CheckInstalledVersion()
         {
-            if (Environment.ProcessPath is null || !File.Exists(Directories.App) || Environment.ProcessPath == Directories.App)
+            if (Environment.ProcessPath is null || !File.Exists(Directories.Application) || Environment.ProcessPath == Directories.Application)
                 return;
 
             bool isAutoUpgrade = Environment.ProcessPath.StartsWith(Directories.Updates);
 
             // if downloaded version doesn't match, replace installed version with downloaded version 
             FileVersionInfo currentVersionInfo = FileVersionInfo.GetVersionInfo(Environment.ProcessPath);
-            FileVersionInfo installedVersionInfo = FileVersionInfo.GetVersionInfo(Directories.App);
+            FileVersionInfo installedVersionInfo = FileVersionInfo.GetVersionInfo(Directories.Application);
 
             if (installedVersionInfo.ProductVersion == currentVersionInfo.ProductVersion)
                 return;
 
 
-            DialogResult result;
+            MessageBoxResult result;
 
             // silently upgrade version if the command line flag is set or if we're launching from an auto update
-            if (Program.IsUpgrade || isAutoUpgrade)
+            if (App.IsUpgrade || isAutoUpgrade)
             {
-                result = DialogResult.Yes;
+                result = MessageBoxResult.Yes;
             }
             else
             {
-                result = Program.ShowMessageBox(
-                    $"The version of {Program.ProjectName} you've launched is different to the version you currently have installed.\nWould you like to upgrade your currently installed version?",
-                    MessageBoxIcon.Question,
-                    MessageBoxButtons.YesNo
+                result = App.ShowMessageBox(
+                    $"The version of {App.ProjectName} you've launched is different to the version you currently have installed.\nWould you like to upgrade your currently installed version?",
+                    MessageBoxImage.Question,
+                    MessageBoxButton.YesNo
                 );
             }
 
 
-            if (result != DialogResult.Yes)
+            if (result != MessageBoxResult.Yes)
                 return;
 
-            File.Delete(Directories.App);
-            File.Copy(Environment.ProcessPath, Directories.App);
+            File.Delete(Directories.Application);
+            File.Copy(Environment.ProcessPath, Directories.Application);
                 
             Bootstrapper.Register();
-                
-            if (Program.IsQuiet || isAutoUpgrade)
+
+            // make people using progress dialog auto switch over to fluent on upgrade
+            if (App.Version == "2.0.0" && App.Settings.Prop.BootstrapperStyle == BootstrapperStyle.ProgressDialog)
+                App.Settings.Prop.BootstrapperStyle = BootstrapperStyle.FluentDialog;
+
+            if (App.IsQuiet || isAutoUpgrade)
                 return;
                 
-            Program.ShowMessageBox(
-                $"{Program.ProjectName} has been updated to v{currentVersionInfo.ProductVersion}",
-                MessageBoxIcon.Information,
-                MessageBoxButtons.OK
+            App.ShowMessageBox(
+                $"{App.ProjectName} has been updated to v{currentVersionInfo.ProductVersion}",
+                MessageBoxImage.Information,
+                MessageBoxButton.OK
             );
 
-            new Preferences().ShowDialog();
-            Program.Exit();
+            //new Preferences().ShowDialog();
+            new MainWindow().ShowDialog();
+            App.Terminate();
         }
     }
 }

@@ -1,4 +1,6 @@
-﻿using Bloxstrap.Dialogs.BootstrapperDialogs;
+﻿using System.Windows.Forms;
+
+using Bloxstrap.Dialogs;
 
 namespace Bloxstrap.Enums
 {
@@ -8,42 +10,22 @@ namespace Bloxstrap.Enums
         LegacyDialog2009,
         LegacyDialog2011,
         ProgressDialog,
+        FluentDialog
     }
 
     public static class BootstrapperStyleEx
     {
-        public static void Show(this BootstrapperStyle bootstrapperStyle, Bootstrapper? bootstrapper = null)
+        public static IBootstrapperDialog GetNew(this BootstrapperStyle bootstrapperStyle)
         {
-            Form dialog;
-
-            switch (bootstrapperStyle)
+            return bootstrapperStyle switch
             {
-                case BootstrapperStyle.VistaDialog:
-                    dialog = new VistaDialog(bootstrapper);
-                    break;
-
-                case BootstrapperStyle.LegacyDialog2009:
-                    dialog = new LegacyDialog2009(bootstrapper);
-                    break;
-
-                case BootstrapperStyle.LegacyDialog2011:
-                    dialog = new LegacyDialog2011(bootstrapper);
-                    break;
-
-                case BootstrapperStyle.ProgressDialog:
-                default:
-                    dialog = new ProgressDialog(bootstrapper);
-                    break;
-            }
-
-            if (bootstrapper is null)
-            {
-                dialog.ShowDialog();
-            }
-            else
-            {
-                Application.Run(dialog);
-            }
+                BootstrapperStyle.VistaDialog => new VistaDialog(),
+                BootstrapperStyle.LegacyDialog2009 => new LegacyDialog2009(),
+                BootstrapperStyle.LegacyDialog2011 => new LegacyDialog2011(),
+                BootstrapperStyle.ProgressDialog => new ProgressDialog(),
+                BootstrapperStyle.FluentDialog => new FluentDialog(),
+                _ => new FluentDialog()
+            };
         }
     }
 }

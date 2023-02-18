@@ -1,12 +1,31 @@
-﻿using System.Diagnostics;
+﻿using System;
+using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Threading.Tasks;
 
 namespace Bloxstrap.Helpers
 {
     public class Utilities
     {
+        public static bool IsDirectoryEmpty(string path)
+        {
+            return !Directory.EnumerateFileSystemEntries(path).Any();
+        }
+
+        public static long GetFreeDiskSpace(string path)
+        {
+            foreach (DriveInfo drive in DriveInfo.GetDrives())
+            {
+                if (path.StartsWith(drive.Name))
+                    return drive.AvailableFreeSpace;
+            }
+
+            return -1;
+        }
+
         public static void OpenWebsite(string website)
         {
             Process.Start(new ProcessStartInfo { FileName = website, UseShellExecute = true });
@@ -16,7 +35,7 @@ namespace Bloxstrap.Helpers
         {
             try
             {
-                string json = await Program.HttpClient.GetStringAsync(url);
+                string json = await App.HttpClient.GetStringAsync(url);
                 return JsonSerializer.Deserialize<T>(json);
             }
             catch (Exception)

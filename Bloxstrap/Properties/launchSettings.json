@@ -1,8 +1,23 @@
 {
   "profiles": {
-    "Bloxstrap": {
+    "Bloxstrap (Launch)": {
+      "commandName": "Project"
+    },
+    "Bloxstrap (Quiet Launch)": {
       "commandName": "Project",
-      "commandLineArgs": "-preferences"
+      "commandLineArgs": "-quiet"
+    },
+    "Bloxstrap (Uninstall)": {
+      "commandName": "Project",
+      "commandLineArgs": "-uninstall"
+    },
+    "Bloxstrap (Quiet Uninstall)": {
+      "commandName": "Project",
+      "commandLineArgs": "-uninstall -quiet"
+    },
+    "Bloxstrap (Menu)": {
+      "commandName": "Project",
+      "commandLineArgs": "-menu"
     }
   }
 }

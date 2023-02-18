@@ -1,7 +1,8 @@
-﻿using System.Diagnostics;
+﻿using System;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
-using System.Net.Http;
+using System.Threading.Tasks;
 
 using Bloxstrap.Models;
 
@@ -30,41 +31,47 @@ namespace Bloxstrap.Helpers.Integrations
 
             if (processes.Length == 0)
                 return;
+
+            App.Logger.WriteLine("[RbxFpsUnlocker::CheckIfRunning] Closing currently running rbxfpsunlocker processes...");
             
             try
             {
-                // try/catch just in case process was closed before prompt was answered
-
                 foreach (Process process in processes)
                 {
-                    if (process.MainModule is null || process.MainModule.FileName is null)
+                    if (process.MainModule?.FileName is null)
                         continue;
 
-                    if (!process.MainModule.FileName.Contains(Program.BaseDirectory))
+                    if (!process.MainModule.FileName.Contains(Directories.Base))
                         continue;
 
                     process.Kill();
                     process.Close();
                 }
             }
-            catch (Exception) { }
+            catch (Exception ex)
+            {
+                App.Logger.WriteLine($"[RbxFpsUnlocker::CheckIfRunning] Could not close rbxfpsunlocker process! {ex}");
+            }
         }
 
         public static async Task CheckInstall()
         {
-            if (Program.BaseDirectory is null)
-                return;
-
-            string folderLocation = Path.Combine(Program.BaseDirectory, "Integrations\\rbxfpsunlocker");
+            string folderLocation = Path.Combine(Directories.Base, "Integrations\\rbxfpsunlocker");
             string fileLocation = Path.Combine(folderLocation, "rbxfpsunlocker.exe");
             string settingsLocation = Path.Combine(folderLocation, "settings");
 
-            if (!Program.Settings.RFUEnabled)
+            if (!App.Settings.Prop.RFUEnabled)
             {
+                App.State.Prop.RbxFpsUnlockerVersion = "";
+                App.State.Save();
+
                 if (Directory.Exists(folderLocation))
                 {
                     CheckIfRunning();
-                    Directory.Delete(folderLocation, true);
+                    
+                    DirectoryInfo directory = new(folderLocation);
+                    directory.Attributes &= ~FileAttributes.ReadOnly;
+                    directory.Delete(true);
                 }
 
                 return;
@@ -82,29 +89,29 @@ namespace Bloxstrap.Helpers.Integrations
             if (File.Exists(fileLocation))
             {
                 // no new release published, return
-                if (Program.Settings.RFUVersion == releaseInfo.TagName)
+                if (App.State.Prop.RbxFpsUnlockerVersion == releaseInfo.TagName)
                     return;
 
                 CheckIfRunning();
                 File.Delete(fileLocation);
             }
 
-            Debug.WriteLine("Installing/Updating rbxfpsunlocker...");
+            App.Logger.WriteLine("[RbxFpsUnlocker::CheckInstall] Installing/Updating rbxfpsunlocker...");
 
-            byte[] bytes = await Program.HttpClient.GetByteArrayAsync(downloadUrl);
-
-            using (MemoryStream zipStream = new(bytes))
             {
-                ZipArchive zip = new(zipStream);
-                zip.ExtractToDirectory(folderLocation, true);
+                byte[] bytes = await App.HttpClient.GetByteArrayAsync(downloadUrl);
+
+                using MemoryStream zipStream = new(bytes);
+                using ZipArchive archive = new(zipStream);
+
+                archive.ExtractToDirectory(folderLocation, true);
             }
 
             if (!File.Exists(settingsLocation))
-            {
                 await File.WriteAllTextAsync(settingsLocation, Settings);
-            }
 
-            Program.Settings.RFUVersion = releaseInfo.TagName;
+            App.State.Prop.RbxFpsUnlockerVersion = releaseInfo.TagName;
+            App.State.Save();
         }
     }
 }
