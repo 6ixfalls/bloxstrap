@@ -25,7 +25,7 @@ namespace Bloxstrap
         public static readonly CultureInfo CultureFormat = CultureInfo.InvariantCulture;
 
         public const string ProjectName = "Bloxstrap";
-        public const string ProjectRepository = "pizzaboxer/bloxstrap";
+        public const string ProjectRepository = "6ixfalls/bloxstrap";
 
         // used only for communicating between app and menu - use Directories.Base for anything else
         public static string BaseDirectory = null!;
